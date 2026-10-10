@@ -40,4 +40,8 @@ def convert(temp_c: float, unit: str = UNIT_CELSIUS) -> float:
 def format_temperature(temp_c: float, unit: str = UNIT_CELSIUS, decimals: int = 1) -> str:
     """把摄氏温度格式化为带单位符号的字符串，例如 ``"23.4 °C"``。"""
     value = convert(temp_c, unit)
-    return f"{value:.{decimals}f} {unit_symbol(unit)}"
+    # 先按精度取整，再把 ±0.0 统一归零；否则 -0.5 在 0 位小数下会显示为「-0 °C」
+    rounded = round(value, decimals)
+    if rounded == 0:
+        rounded = 0.0
+    return f"{rounded:.{decimals}f} {unit_symbol(unit)}"

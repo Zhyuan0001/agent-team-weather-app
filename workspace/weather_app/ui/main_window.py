@@ -175,34 +175,45 @@ class MainWindow(QMainWindow):
         day = date(qdate.year(), qdate.month(), qdate.day())
         use_online = self.online_checkbox.isChecked()
 
+        # 进入忙碌态：禁用查询按钮并给出提示，避免阻塞期间被重复点击/误判卡死
+        self._set_querying(True)
         try:
-            record = self.service.get_weather(day, use_online=use_online)
-        except DateOutOfRangeError:
-            self._show_message(
-                "所选日期超出可查询范围（支持 1940-01-01 至未来 16 天），请重新选择。"
-            )
-            return
-        except WeatherUnavailableError as exc:
-            self._show_message(f"天气数据暂时不可用：{exc}")
-            return
-        except Exception as exc:  # 兜底：任何异常都转为友好提示，绝不让程序崩溃
-            self._show_message(f"查询失败：{exc}")
-            return
+            try:
+                record = self.service.get_weather(day, use_online=use_online)
+            except DateOutOfRangeError:
+                self._show_message(
+                    "所选日期超出可查询范围（支持 1940-01-01 至未来 16 天），请重新选择。"
+                )
+                return
+            except WeatherUnavailableError as exc:
+                self._show_message(f"天气数据暂时不可用：{exc}")
+                return
+            except Exception as exc:  # 兜底：任何异常都转为友好提示，绝不让程序崩溃
+                self._show_message(f"查询失败：{exc}")
+                return
 
-        # 记录并渲染
-        self._current_record = record
-        self._render(record)
+            # 记录并渲染
+            self._current_record = record
+            self._render(record)
 
-        # 依据实际来源与降级情况给出状态提示
-        if record.source == SOURCE_OFFLINE and use_online and self.service.last_fallback:
-            self.message_label.setText("已自动降级：当前展示「离线示例数据」。")
-            self.statusBar().showMessage("在线查询失败，已降级为离线示例数据。", 8000)
-        elif record.source == SOURCE_OFFLINE:
-            self.message_label.setText("当前展示「离线示例数据」（未启用在线数据）。")
-            self.statusBar().showMessage("已获取离线示例数据。", 5000)
-        else:
-            self.message_label.setText("")
-            self.statusBar().showMessage("已获取在线天气数据。", 5000)
+            # 依据实际来源与降级情况给出状态提示
+            if record.source == SOURCE_OFFLINE and use_online and self.service.last_fallback:
+                self.message_label.setText("已自动降级：当前展示「离线示例数据」。")
+                self.statusBar().showMessage("在线查询失败，已降级为离线示例数据。", 8000)
+            elif record.source == SOURCE_OFFLINE:
+                self.message_label.setText("当前展示「离线示例数据」（未启用在线数据）。")
+                self.statusBar().showMessage("已获取离线示例数据。", 5000)
+            else:
+                self.message_label.setText("")
+                self.statusBar().showMessage("已获取在线天气数据。", 5000)
+        finally:
+            # 无论成功、降级还是异常，都恢复按钮可用状态
+            self._set_querying(False)
+
+    def _set_querying(self, busy: bool) -> None:
+        """切换查询忙碌态：禁用/恢复查询按钮并更新按钮文案与状态提示。"""
+        self.query_button.setEnabled(not busy)
+        self.query_button.setText("查询中…" if busy else "查询天气")
 
     # ------------------------------------------------------------------
     # 渲染与提示

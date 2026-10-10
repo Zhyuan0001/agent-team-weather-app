@@ -33,12 +33,16 @@ class WeatherService:
         self._offline = offline_provider if offline_provider is not None else OfflineProvider()
         # 缓存：键为 (来源类别, 日期)，值为 WeatherRecord
         self._cache: dict[tuple[str, date], WeatherRecord] = {}
+        #: 在线失败负缓存：记录近期在线查询失败的日期，命中则短期内直接走离线，
+        #: 避免无网反复重试在线并各等待一次完整超时（保障「完全离线可演示」）。
+        self._online_failed_days: set[date] = set()
         #: 记录最近一次查询是否发生了「降级」
         self.last_fallback: bool = False
 
     def clear_cache(self) -> None:
-        """清空内存缓存。"""
+        """清空内存缓存（含在线失败负缓存）。"""
         self._cache.clear()
+        self._online_failed_days.clear()
 
     def get_weather(self, day: date, use_online: bool = True) -> WeatherRecord:
         """获取指定日期的天气记录。
@@ -67,20 +71,30 @@ class WeatherService:
             if cached is not None:
                 return cached
 
-            try:
-                record = self._online.fetch(day)
-            except DateOutOfRangeError:
-                # 日期本身不可查询，无需降级，直接上抛由界面友好提示
-                raise
-            except WeatherUnavailableError:
-                # 网络/HTTP 失败 -> 走降级分支
-                record = None
+            # 负缓存命中：该日期此前在线查询已失败，直接降级，不再重复等待超时
+            if day not in self._online_failed_days:
+                try:
+                    record = self._online.fetch(day)
+                except DateOutOfRangeError:
+                    # 日期本身不可查询，无需降级，直接上抛由界面友好提示
+                    raise
+                except (
+                    WeatherUnavailableError,
+                    AttributeError,
+                    ValueError,
+                    TypeError,
+                    KeyError,
+                ):
+                    # 网络/HTTP/解析类失败（含畸形响应引发的非业务异常）
+                    # 一律视为「取不到数据」-> 记入负缓存并走降级分支（SPEC F4）
+                    self._online_failed_days.add(day)
+                    record = None
 
-            if record is not None:
-                self._cache[("online", day)] = record
-                return record
+                if record is not None:
+                    self._cache[("online", day)] = record
+                    return record
 
-            # 记录本次查询发生了降级
+            # 记录本次查询发生了降级（在线失败或被负缓存跳过）
             self.last_fallback = True
 
         # 离线分支（未启用在线，或在线失败降级）
