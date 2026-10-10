@@ -4,3 +4,6 @@ __pycache__/
 .venv/
 venv/
 *.egg-info/
+
+# 讲义原文（课程材料，不随代码公开）
+讲义-第四讲-全文.txt
