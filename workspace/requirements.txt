@@ -1,0 +1,5 @@
+# 天气查询桌面应用依赖
+# GUI 框架（Qt 5.15）
+PyQt5>=5.15
+# HTTP 客户端（访问 open-meteo 在线数据源）
+requests>=2.28
