@@ -3,6 +3,7 @@
 > **课程**：软件工程 · 第四讲《软件过程模型》
 > **作业**：按讲义要求组建 Agent Team（主控 + CodeWriter + Test Engineer + Code Reviewer）协作开发一个程序，并把**开发过程、发现的问题、总结的经验**写成博客
 > **成果**：PyQt5「天气查询」桌面应用 · 154 个测试用例全部通过 · 两轮真实迭代
+> **源码仓库**：https://github.com/Zhyuan0001/agent-team-weather-app
 
 ---
 
@@ -231,6 +232,17 @@ def to_float(raw, key):
 | 修复 | 高风险 1 + 中风险 5 + bug 7，**全部修复**；低风险 11 项评估后保留 |
 | 迭代 | **2 轮修复迭代**（bug 修复 + 架构改进） |
 | 过程 | 完整迭代记录 + 可复现的 4 份角色提示词 + 运行截图 |
+| **源码** | **https://github.com/Zhyuan0001/agent-team-weather-app** |
+
+> 全部源码、测试代码、评审报告与测试报告都已开源在上述仓库，欢迎克隆复现：
+>
+> ```bash
+> git clone https://github.com/Zhyuan0001/agent-team-weather-app.git
+> cd agent-team-weather-app/workspace
+> pip install -r requirements.txt
+> python app.py                    # 运行程序
+> python -m pytest tests/ -v       # 运行 154 个测试
+> ```
 
 程序运行效果：
 
