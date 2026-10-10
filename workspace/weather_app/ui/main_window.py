@@ -8,9 +8,16 @@
     * 「查询天气」按钮
     * 结果区：天气状况（文字 + emoji）、温度、湿度、风速、数据来源
     * 状态栏 + 内联提示：错误与「离线示例数据」提示均为友好文案，绝不弹崩溃
+
+线程模型（评审报告 H1 修复）：
+    查询交给 ``QueryRunner`` 执行（见 ``ui.query_runner``）：真实应用使用
+    ``ThreadQueryRunner`` 在后台 QThread 中调用同步的 ``WeatherService``，
+    结果经 Qt 信号回到主线程渲染，界面不再因最长约 8 秒的网络超时而冻结；
+    测试可注入 ``SyncQueryRunner`` 获得确定性的同步回调。
 """
 from __future__ import annotations
 
+import functools
 from datetime import date
 
 from PyQt5.QtCore import QDate, Qt
@@ -35,6 +42,7 @@ from ..core.formatting import render_record
 from ..core.models import SOURCE_OFFLINE
 from ..core.units import UNIT_CELSIUS, UNIT_FAHRENHEIT
 from ..services.weather_service import WeatherService
+from .query_runner import QueryRunner, ThreadQueryRunner
 
 # 日期控件允许的粗略范围（越界会被服务层/界面友好拦截）
 _MIN_QDATE = QDate(1940, 1, 1)
@@ -45,14 +53,24 @@ _PLACEHOLDER = "—"
 
 
 class MainWindow(QMainWindow):
-    """天气查询主窗口。"""
+    """天气查询主窗口（查询经 QueryRunner 执行，主线程不被网络请求阻塞）。"""
 
-    def __init__(self, service: WeatherService | None = None, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        service: WeatherService | None = None,
+        runner: QueryRunner | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         # 允许注入 service，便于替换数据源或测试
         self.service = service if service is not None else WeatherService()
+        # 查询执行器：真实应用默认后台线程（网络请求不阻塞界面）；
+        # 测试可注入 SyncQueryRunner，获得确定性的同步回调。
+        self.runner = runner if runner is not None else ThreadQueryRunner(parent=self)
         # 保存最近一次查询结果，供单位切换时重渲染
         self._current_record = None
+        # 忙碌标记：查询进行中忽略再次点击（按钮禁用之外的第二道防线）
+        self._querying = False
         self._build_ui()
         self.statusBar().showMessage("请选择日期后点击「查询天气」。")
 
@@ -170,34 +188,40 @@ class MainWindow(QMainWindow):
             self._render(self._current_record)
 
     def _on_query(self) -> None:
-        """查询按钮：读取界面输入并调用服务层。"""
+        """查询按钮：读取界面输入，交给执行器查询（网络请求不阻塞主线程）。"""
+        # 忙碌期间忽略再次点击（按钮此时已禁用，这里再兜底直接调用的情况）
+        if self._querying:
+            return
+
         qdate = self.date_edit.date()
         day = date(qdate.year(), qdate.month(), qdate.day())
         use_online = self.online_checkbox.isChecked()
 
-        # 进入忙碌态：禁用查询按钮并给出提示，避免阻塞期间被重复点击/误判卡死
+        # 进入忙碌态：禁用查询按钮并显示「查询中…」，等结果回调后再恢复
         self._set_querying(True)
         try:
-            try:
-                record = self.service.get_weather(day, use_online=use_online)
-            except DateOutOfRangeError:
-                self._show_message(
-                    "所选日期超出可查询范围（支持 1940-01-01 至未来 16 天），请重新选择。"
-                )
-                return
-            except WeatherUnavailableError as exc:
-                self._show_message(f"天气数据暂时不可用：{exc}")
-                return
-            except Exception as exc:  # 兜底：任何异常都转为友好提示，绝不让程序崩溃
-                self._show_message(f"查询失败：{exc}")
-                return
+            # 执行方式由 runner 决定：ThreadQueryRunner 在后台线程执行（真实应用），
+            # SyncQueryRunner 立即同步执行（测试注入，保证断言确定性）。
+            # 成功/失败回调触发后都会恢复按钮可用状态。
+            self.runner.run(
+                self.service,
+                day,
+                use_online,
+                functools.partial(self._on_query_success, use_online=use_online),
+                self._on_query_error,
+            )
+        except Exception as exc:  # 兜底：执行器自身异常也要恢复界面，绝不卡在忙碌态
+            self._on_query_error(exc)
 
-            # 记录并渲染
+    def _on_query_success(self, record, last_fallback: bool, use_online: bool) -> None:
+        """查询成功回调（主线程）：渲染结果并给出来源/降级提示，随后恢复按钮。"""
+        try:
+            # 记录并渲染（保留最近结果，供单位切换时重渲染）
             self._current_record = record
             self._render(record)
 
-            # 依据实际来源与降级情况给出状态提示
-            if record.source == SOURCE_OFFLINE and use_online and self.service.last_fallback:
+            # 依据实际来源与降级情况给出状态提示（文案与同步版本逐字保持一致）
+            if record.source == SOURCE_OFFLINE and use_online and last_fallback:
                 self.message_label.setText("已自动降级：当前展示「离线示例数据」。")
                 self.statusBar().showMessage("在线查询失败，已降级为离线示例数据。", 8000)
             elif record.source == SOURCE_OFFLINE:
@@ -207,11 +231,27 @@ class MainWindow(QMainWindow):
                 self.message_label.setText("")
                 self.statusBar().showMessage("已获取在线天气数据。", 5000)
         finally:
+            # 无论渲染是否意外失败，都恢复按钮，避免界面永久停留在忙碌态
+            self._set_querying(False)
+
+    def _on_query_error(self, exc: Exception) -> None:
+        """查询失败回调（主线程）：按异常类型给出友好提示，随后恢复按钮。"""
+        try:
+            if isinstance(exc, DateOutOfRangeError):
+                self._show_message(
+                    "所选日期超出可查询范围（支持 1940-01-01 至未来 16 天），请重新选择。"
+                )
+            elif isinstance(exc, WeatherUnavailableError):
+                self._show_message(f"天气数据暂时不可用：{exc}")
+            else:  # 兜底：任何异常都转为友好提示，绝不让程序崩溃
+                self._show_message(f"查询失败：{exc}")
+        finally:
             # 无论成功、降级还是异常，都恢复按钮可用状态
             self._set_querying(False)
 
     def _set_querying(self, busy: bool) -> None:
-        """切换查询忙碌态：禁用/恢复查询按钮并更新按钮文案与状态提示。"""
+        """切换查询忙碌态：禁用/恢复查询按钮、更新文案，并记录忙碌标记。"""
+        self._querying = busy
         self.query_button.setEnabled(not busy)
         self.query_button.setText("查询中…" if busy else "查询天气")
 
